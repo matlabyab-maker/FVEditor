@@ -383,7 +383,7 @@ private class FrameAdapter(
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
         val root = FrameLayout(parent.context).apply {
-            val spanCount = (parent.layoutManager as? GridLayoutManager)?.spanCount ?: 3
+            val spanCount = ((parent as? RecyclerView)?.layoutManager as? GridLayoutManager)?.spanCount ?: 3
             val available = parent.width.takeIf { it > 0 } ?: parent.resources.displayMetrics.widthPixels
             val cellWidth = max(1, available / spanCount)
             layoutParams = RecyclerView.LayoutParams(
