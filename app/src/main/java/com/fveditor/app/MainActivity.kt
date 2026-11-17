@@ -78,7 +78,6 @@ class MainActivity : ComponentActivity() {
         val toolScroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = true
             overScrollMode = View.OVER_SCROLL_NEVER
-            fillViewport = false
         }
         val toolRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -235,7 +234,7 @@ class MainActivity : ComponentActivity() {
                         ?.findFirstVisibleItemPosition()?.coerceAtLeast(0) ?: 0
                     columns = position + 1
                     (storyboard.layoutManager as? GridLayoutManager)?.spanCount = columns
-                    adapter.notifyDataSetChanged()
+                    this@MainActivity.adapter.notifyDataSetChanged()
                     storyboard.requestLayout()
                     storyboard.post { storyboard.scrollToPosition(firstVisible) }
                 }
