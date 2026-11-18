@@ -3,6 +3,12 @@ package com.fveditor.app
 import android.content.Intent
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
+import android.media.MediaCodec
+import android.media.MediaExtractor
+import android.media.MediaFormat
+import android.media.MediaMuxer
+import android.provider.OpenableColumns
+import android.os.Environment
 import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
@@ -17,6 +23,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
+import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.max
@@ -39,6 +46,12 @@ class MainActivity : ComponentActivity() {
     private val frameTimesMs = LongArray(frameCount) { it * 1000L }
     private val frameExecutor = Executors.newFixedThreadPool(4)
     private var selectedUri: Uri? = null
+    private val importedVideos = mutableListOf<Uri>()
+    private var outputTreeUri: Uri? = null
+    private var pendingSplitAfterFolder = false
+    private var splitByCount = true
+    private var splitCount = 2
+    private var splitSeconds = 30
     private var columns = 3
     private var timeModeSeconds = true
     private val speeds = listOf(0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f, 4.0f)
@@ -50,11 +63,34 @@ class MainActivity : ComponentActivity() {
     private var gestureStartVolume = 0
 
     private val pickVideo = registerForActivityResult(
-        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+        androidx.activity.result.contract.ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            uris.forEach { uri ->
+                try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) {}
+                if (!importedVideos.contains(uri)) importedVideos.add(uri)
+            }
+            loadVideo(uris.first())
+            Toast.makeText(this, "${importedVideos.size} ویدیو وارد شده", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private val pickOutputFolder = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         if (uri != null) {
-            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            loadVideo(uri)
+            try {
+                contentResolver.takePersistableUriPermission(uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            } catch (_: Exception) {}
+            outputTreeUri = uri
+            Toast.makeText(this, "پوشه خروجی انتخاب شد", Toast.LENGTH_SHORT).show()
+            if (pendingSplitAfterFolder) {
+                pendingSplitAfterFolder = false
+                runSplitAll()
+            }
+        } else {
+            pendingSplitAfterFolder = false
         }
     }
 
@@ -86,7 +122,9 @@ class MainActivity : ComponentActivity() {
         }
         toolRow.addView(controlButton("Tool") { }, fixedButtonParams())
         toolRow.addView(controlButton("Import Video") { pickVideo.launch(arrayOf("video/*")) }, fixedButtonParams())
-        toolRow.addView(controlButton("Export Video") { showNotReady("خروجی ویدیو") }, fixedButtonParams())
+        toolRow.addView(controlButton("Videos") { showVideoList() }, fixedButtonParams())
+        toolRow.addView(controlButton("Export Video") { showExportDialog() }, fixedButtonParams())
+        toolRow.addView(controlButton("Split") { showSplitDialog() }, fixedButtonParams())
         toolRow.addView(controlButton("Delete") { showNotReady("حذف") }, fixedButtonParams())
         toolRow.addView(controlButton("Crop") { showNotReady("برش") }, fixedButtonParams())
         toolRow.addView(controlButton("Merge") { showNotReady("ادغام") }, fixedButtonParams())
@@ -320,6 +358,206 @@ class MainActivity : ComponentActivity() {
 
     private fun showNotReady(tool: String) {
         Toast.makeText(this, "$tool هنوز پیاده‌سازی نشده است", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun showVideoList() {
+        if (importedVideos.isEmpty()) {
+            Toast.makeText(this, "ابتدا ویدیو وارد کنید", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val names = importedVideos.mapIndexed { i, uri -> "${i + 1}. ${displayName(uri)}" }.toTypedArray()
+        android.app.AlertDialog.Builder(this)
+            .setTitle("ویدیوهای واردشده (${importedVideos.size})")
+            .setItems(names) { _, which -> loadVideo(importedVideos[which]) }
+            .setPositiveButton("بستن", null)
+            .show()
+    }
+
+    private fun showExportDialog() {
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(4))
+        }
+        val rename = CheckBox(this).apply { text = "ReName"; isChecked = false }
+        val tag = CheckBox(this).apply { text = "tag"; isChecked = false }
+        val original = CheckBox(this).apply { text = "Original"; isChecked = true }
+        panel.addView(rename); panel.addView(tag); panel.addView(original)
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Export Video")
+            .setView(panel)
+            .setNegativeButton("بستن", null)
+            .setPositiveButton("Save") { _, _ ->
+                Toast.makeText(this, "تنظیمات انتخاب شد؛ موتور Export کامل نشده است", Toast.LENGTH_LONG).show()
+            }
+            .setNeutralButton("Save As") { _, _ -> pickOutputFolder.launch(null) }
+            .show()
+    }
+
+    private fun showSplitDialog() {
+        if (importedVideos.isEmpty()) {
+            Toast.makeText(this, "ابتدا یک یا چند ویدیو وارد کنید", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(8), dp(18), dp(4))
+        }
+        val mode = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        val countMode = RadioButton(this).apply { id = View.generateViewId(); text = "تقسیم بر اساس تعداد قسمت‌ها" }
+        val timeMode = RadioButton(this).apply { id = View.generateViewId(); text = "تقسیم بر اساس زمان هر قسمت (ثانیه)" }
+        mode.addView(countMode); mode.addView(timeMode)
+        countMode.isChecked = splitByCount
+        timeMode.isChecked = !splitByCount
+        val countInput = EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            hint = "تعداد قسمت‌ها"; setText(splitCount.toString())
+        }
+        val secondsInput = EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            hint = "زمان هر قسمت به ثانیه"; setText(splitSeconds.toString())
+        }
+        panel.addView(mode); panel.addView(countInput); panel.addView(secondsInput)
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Split – همه ویدیوهای واردشده")
+            .setView(panel)
+            .setNegativeButton("لغو", null)
+            .setNeutralButton("Save As") { _, _ ->
+                splitByCount = countMode.isChecked
+                splitCount = countInput.text.toString().toIntOrNull()?.coerceIn(2, 100) ?: 2
+                splitSeconds = secondsInput.text.toString().toIntOrNull()?.coerceIn(1, 86400) ?: 30
+                pendingSplitAfterFolder = true
+                pickOutputFolder.launch(null)
+            }
+            .setPositiveButton("Save") { _, _ ->
+                splitByCount = countMode.isChecked
+                splitCount = countInput.text.toString().toIntOrNull()?.coerceIn(2, 100) ?: 2
+                splitSeconds = secondsInput.text.toString().toIntOrNull()?.coerceIn(1, 86400) ?: 30
+                runSplitAll()
+            }
+            .show()
+    }
+
+    private fun runSplitAll() {
+        val sources = importedVideos.toList()
+        if (sources.isEmpty()) return
+        Toast.makeText(this, "شروع تقسیم ${sources.size} ویدیو…", Toast.LENGTH_SHORT).show()
+        Thread {
+            var success = 0
+            var failed = 0
+            sources.forEachIndexed { sourceIndex, uri ->
+                try {
+                    val duration = MediaMetadataRetriever().run {
+                        setDataSource(this@MainActivity, uri)
+                        val d = extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                        release()
+                        d
+                    }
+                    if (duration <= 0) throw IllegalStateException("duration")
+                    val segmentMs = if (splitByCount) (duration / splitCount).coerceAtLeast(1L) else splitSeconds * 1000L
+                    splitOneVideo(uri, segmentMs, sourceIndex + 1)
+                    success++
+                } catch (_: Exception) { failed++ }
+            }
+            runOnUiThread {
+                Toast.makeText(this, "تقسیم تمام شد؛ موفق: $success، ناموفق: $failed", Toast.LENGTH_LONG).show()
+            }
+        }.start()
+    }
+
+    private fun splitOneVideo(uri: Uri, segmentMs: Long, sourceNumber: Int) {
+        val extractor = MediaExtractor()
+        val tempFiles = mutableListOf<File>()
+        try {
+            extractor.setDataSource(this, uri, null)
+            val trackFormats = (0 until extractor.trackCount).map { extractor.getTrackFormat(it) }
+            val videoTrack = trackFormats.indexOfFirst {
+                (it.getString(MediaFormat.KEY_MIME) ?: "").startsWith("video/")
+            }
+            if (videoTrack < 0) throw IllegalStateException("No video track")
+            trackFormats.indices.forEach { extractor.selectTrack(it) }
+            val sourceName = displayName(uri)
+            val baseName = sourceName.substringBeforeLast('.', sourceName)
+                .replace(Regex("[^A-Za-z0-9._-]"), "_") + "_video_$sourceNumber"
+            val buffer = java.nio.ByteBuffer.allocate(16 * 1024 * 1024)
+            val info = MediaCodec.BufferInfo()
+            var muxer: MediaMuxer? = null
+            var currentFile: File? = null
+            var segmentIndex = 0
+            var segmentStartUs = -1L
+            var nextBoundaryUs = segmentMs * 1000L
+            fun startSegment(startUs: Long) {
+                val file = File(cacheDir, "${baseName}_part_${segmentIndex + 1}.mp4")
+                tempFiles.add(file)
+                currentFile = file
+                muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+                trackFormats.forEach { muxer!!.addTrack(it) }
+                muxer!!.start()
+                segmentStartUs = startUs
+            }
+            fun finishSegment() {
+                try { muxer?.stop() } catch (_: Exception) {}
+                try { muxer?.release() } catch (_: Exception) {}
+                muxer = null
+                val file = currentFile
+                if (file != null && file.exists() && file.length() > 0) {
+                    saveOutputFile(file, "${baseName}_part_${segmentIndex + 1}.mp4")
+                }
+                segmentIndex++
+            }
+            while (true) {
+                val track = extractor.sampleTrackIndex
+                if (track < 0) break
+                val timeUs = extractor.sampleTime
+                if (track == videoTrack && extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0 &&
+                    segmentStartUs >= 0 && timeUs >= nextBoundaryUs) {
+                    finishSegment()
+                    startSegment(timeUs)
+                    nextBoundaryUs += segmentMs * 1000L
+                } else if (muxer == null && track == videoTrack &&
+                    extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0) {
+                    startSegment(timeUs)
+                }
+                if (muxer != null && segmentStartUs >= 0 &&
+                    (track == videoTrack || timeUs >= segmentStartUs)) {
+                    buffer.clear()
+                    val size = extractor.readSampleData(buffer, 0)
+                    if (size > 0) {
+                        info.set(0, size, (timeUs - segmentStartUs).coerceAtLeast(0L),
+                            extractor.sampleFlags)
+                        try { muxer!!.writeSampleData(track, buffer, info) } catch (_: Exception) {}
+                    }
+                }
+                if (!extractor.advance()) break
+            }
+            if (muxer != null) finishSegment()
+            if (segmentIndex == 0) throw IllegalStateException("No segments")
+        } finally {
+            try { extractor.release() } catch (_: Exception) {}
+            tempFiles.forEach { try { it.delete() } catch (_: Exception) {} }
+        }
+    }
+
+    private fun saveOutputFile(file: File, name: String) {
+        val tree = outputTreeUri
+        if (tree == null) {
+            val dir = getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: filesDir
+            val outDir = File(dir, "FVEditor").apply { mkdirs() }
+            file.copyTo(File(outDir, name), overwrite = true)
+        } else {
+            val root = androidx.documentfile.provider.DocumentFile.fromTreeUri(this, tree)
+                ?: throw IllegalStateException("folder")
+            val out = root.createFile("video/mp4", name) ?: throw IllegalStateException("create")
+            contentResolver.openOutputStream(out.uri)?.use { output -> file.inputStream().use { it.copyTo(output) } }
+                ?: throw IllegalStateException("write")
+        }
+    }
+
+    private fun displayName(uri: Uri): String {
+        var name = "video"
+        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) name = c.getString(0) ?: name
+        }
+        return name
     }
 
     private fun controlButton(label: String, action: () -> Unit): Button =

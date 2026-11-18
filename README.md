@@ -25,3 +25,21 @@
 
 ## وضعیت
 این نسخه اسکلت اولیه و نقطه شروع است؛ هنوز روی دستگاه واقعی یا GitHub Actions آزمایش نشده است.
+
+
+## Latest update – multi-video import and Split
+
+- Import Video now supports selecting multiple video files in one picker session.
+- Videos opens a list of imported sources; selecting an item loads it into the preview player.
+- Split is a separate Tool-row button; it is no longer an option inside Export Video.
+- Split processes every imported video, with two modes:
+  - Split into a requested number of parts (2–100).
+  - Split into parts of a requested duration in seconds.
+- Split / Save writes generated MP4 segments into the app's FVEditor folder under Movies.
+- Split / Save As lets the user choose a destination folder with Android's folder picker.
+- Segment names are generated from the source filename and source order.
+- Export Video currently displays the ReName, tag and Original checkboxes and Save / Save As controls. The actual timeline render/export engine and the meaning/processing of these three options are not yet implemented.
+- Crop, Merge, Join and other processing tools remain unimplemented.
+- The existing player, storyboard layout, 150-frame storyboard and four frame extraction workers were preserved.
+
+Build: `gradle --no-daemon :app:assembleDebug`
