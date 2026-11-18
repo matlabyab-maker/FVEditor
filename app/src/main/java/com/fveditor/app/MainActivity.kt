@@ -96,7 +96,7 @@ class MainActivity : ComponentActivity() {
         toolRow.addView(controlButton("Format") { showNotReady("فرمت") }, fixedButtonParams())
         toolScroll.addView(toolRow)
         root.addView(toolScroll, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(85)
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(43)
         ))
 
         // Keep the player itself unchanged; the transparent gesture layer sits
@@ -158,10 +158,20 @@ class MainActivity : ComponentActivity() {
         ))
 
         // Speed and time-unit controls are moved into the row above the seekbar.
+        // Playback controls sit directly below the player, left-aligned in
+        // two compact vertical columns. The player view itself is unchanged.
         val playerControls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
+            gravity = Gravity.TOP or Gravity.START
             setPadding(dp(2), 0, dp(2), 0)
+        }
+        val controlsColumnOne = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.TOP
+        }
+        val controlsColumnTwo = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.TOP
         }
         val backButton = controlButton("−10 فریم") { seekFrames(-10) }
         playButton = controlButton("▶") { togglePlay() }
@@ -177,11 +187,16 @@ class MainActivity : ComponentActivity() {
             player.setPlaybackSpeed(speed)
             speedButton.text = "${speed}x"
         }
-        listOf(backButton, playButton, forwardButton, timeModeButton, speedButton).forEach {
-            playerControls.addView(it, fixedButtonParams())
+        listOf(backButton, forwardButton, speedButton).forEach {
+            controlsColumnOne.addView(it, fixedButtonParams())
         }
+        listOf(playButton, timeModeButton).forEach {
+            controlsColumnTwo.addView(it, fixedButtonParams())
+        }
+        playerControls.addView(controlsColumnOne)
+        playerControls.addView(controlsColumnTwo)
         root.addView(playerControls, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(85)
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(126)
         ))
 
         val seekRow = LinearLayout(this).apply {
@@ -246,7 +261,7 @@ class MainActivity : ComponentActivity() {
         }
         storyboardToolbar.addView(columnSpinner, LinearLayout.LayoutParams(0, dp(85), 1f))
         root.addView(storyboardToolbar, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(85)
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(43)
         ))
 
         val storyboardArea = FrameLayout(this)
@@ -296,7 +311,7 @@ class MainActivity : ComponentActivity() {
         })
     }
 
-    private fun fixedButtonParams() = LinearLayout.LayoutParams(dp(54), dp(85))
+    private fun fixedButtonParams() = LinearLayout.LayoutParams(dp(54), dp(42))
 
     private fun scrollStoryboardTo(position: Int) {
         storyboard.scrollToPosition(position.coerceIn(0, frameCount - 1))
@@ -309,8 +324,8 @@ class MainActivity : ComponentActivity() {
 
     private fun controlButton(label: String, action: () -> Unit): Button =
         Button(this).apply {
-            text = label
-            textSize = 9f
+            text = if (label.contains(' ')) label.replace(" ", "\n") else label
+            textSize = 8.5f
             gravity = Gravity.CENTER
             setSingleLine(false)
             maxLines = 3
