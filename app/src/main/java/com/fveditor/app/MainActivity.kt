@@ -363,6 +363,7 @@ class MainActivity : ComponentActivity() {
             setHintTextColor(0xFFAAAAAA.toInt())
             textSize = 11f
             gravity = Gravity.CENTER
+<<<<<<< HEAD
             setSingleLine(true)
             setPadding(0, 0, 0, 0)
             background = android.graphics.drawable.GradientDrawable().apply {
@@ -378,6 +379,23 @@ class MainActivity : ComponentActivity() {
             textSize = 11f
             gravity = Gravity.CENTER
             setSingleLine(true)
+=======
+            singleLine = true
+            setPadding(0, 0, 0, 0)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xFF292929.toInt()); setStroke(dp(1), 0xFF777777.toInt()); cornerRadius = dp(4).toFloat()
+            }
+        }
+        val secondInput = EditText(this).apply {
+            hint = "Sec"
+            setText("0")
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setTextColor(android.graphics.Color.WHITE)
+            setHintTextColor(0xFFAAAAAA.toInt())
+            textSize = 11f
+            gravity = Gravity.CENTER
+            singleLine = true
+>>>>>>> branch 'master' of https://github.com/matlabyab-maker/FVEditor.git
             setPadding(0, 0, 0, 0)
             background = android.graphics.drawable.GradientDrawable().apply {
                 setColor(0xFF292929.toInt()); setStroke(dp(1), 0xFF777777.toInt()); cornerRadius = dp(4).toFloat()
