@@ -11,6 +11,8 @@ import android.provider.OpenableColumns
 import android.os.Environment
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -40,6 +42,13 @@ class MainActivity : ComponentActivity() {
     private lateinit var speedButton: Button
     private lateinit var timeModeButton: Button
     private lateinit var dragScroller: ThickVerticalScroller
+    private lateinit var brightnessOverlay: View
+    private lateinit var positionSeek: SeekBar
+    private val workerLabels = mutableListOf<TextView>()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var isUserScrubbing = false
+    private var extractionGeneration = 0
+    private var framesCompleted = 0
 
     private val frameCount = 150
     private val frames = MutableList<Bitmap?>(frameCount) { null }
@@ -109,32 +118,55 @@ class MainActivity : ComponentActivity() {
             setPadding(0, 0, 0, 0)
         }
 
-        // Tool strip: one horizontal row at the very top. It scrolls internally
-        // on narrow screens instead of forcing the whole page to scroll.
+        // Compact top strip: keep only unique main actions. Player controls are
+        // integrated here; duplicate/unimplemented tool launchers are omitted.
         val toolScroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = true
             overScrollMode = View.OVER_SCROLL_NEVER
         }
         val toolRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(2), 0, dp(2), 0)
+            gravity = Gravity.TOP or Gravity.START
+            setPadding(dp(2), dp(1), dp(2), 0)
         }
-        toolRow.addView(controlButton("Tool") { }, fixedButtonParams())
-        toolRow.addView(controlButton("Import Video") { pickVideo.launch(arrayOf("video/*")) }, fixedButtonParams())
+        toolRow.addView(controlButton("Import\nVideo") { pickVideo.launch(arrayOf("video/*")) }, fixedButtonParams())
         toolRow.addView(controlButton("Videos") { showVideoList() }, fixedButtonParams())
-        toolRow.addView(controlButton("Export Video") { showExportDialog() }, fixedButtonParams())
+        toolRow.addView(controlButton("Export\nVideo") { showExportDialog() }, fixedButtonParams())
         toolRow.addView(controlButton("Split") { showSplitDialog() }, fixedButtonParams())
-        toolRow.addView(controlButton("Delete") { showNotReady("حذف") }, fixedButtonParams())
-        toolRow.addView(controlButton("Crop") { showNotReady("برش") }, fixedButtonParams())
-        toolRow.addView(controlButton("Merge") { showNotReady("ادغام") }, fixedButtonParams())
-        toolRow.addView(controlButton("Join") { showNotReady("اتصال") }, fixedButtonParams())
-        toolRow.addView(controlButton("Color and Light") { showNotReady("رنگ و نور") }, fixedButtonParams())
-        toolRow.addView(controlButton("Tracks") { showNotReady("ترک‌ها") }, fixedButtonParams())
-        toolRow.addView(controlButton("Format") { showNotReady("فرمت") }, fixedButtonParams())
+
+        val controlsColumnOne = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.TOP
+        }
+        val controlsColumnTwo = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.TOP
+        }
+        val backButton = controlButton("−10\nفریم") { seekFrames(-10) }
+        playButton = controlButton("▶") { togglePlay() }
+        val forwardButton = controlButton("+10\nفریم") { seekFrames(10) }
+        timeModeButton = controlButton("SEC") {
+            timeModeSeconds = !timeModeSeconds
+            timeModeButton.text = if (timeModeSeconds) "SEC" else "MIN"
+            updateTimeLabel(positionLabel)
+        }
+        speedButton = controlButton("1.0x") {
+            speedIndex = (speedIndex + 1) % speeds.size
+            val speed = speeds[speedIndex]
+            player.setPlaybackSpeed(speed)
+            speedButton.text = "${speed}x"
+        }
+        listOf(backButton, forwardButton, speedButton).forEach {
+            controlsColumnOne.addView(it, fixedButtonParams())
+        }
+        listOf(playButton, timeModeButton).forEach {
+            controlsColumnTwo.addView(it, fixedButtonParams())
+        }
+        toolRow.addView(controlsColumnOne)
+        toolRow.addView(controlsColumnTwo)
         toolScroll.addView(toolRow)
         root.addView(toolScroll, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(43)
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(86)
         ))
 
         // Keep the player itself unchanged; the transparent gesture layer sits
@@ -149,6 +181,13 @@ class MainActivity : ComponentActivity() {
         playerContainer.addView(playerView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
         ))
+        brightnessOverlay = View(this).apply {
+            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            isClickable = false
+        }
+        playerContainer.addView(brightnessOverlay, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+        ))
         val gestureLayer = View(this).apply {
             setBackgroundColor(android.graphics.Color.TRANSPARENT)
             setOnTouchListener { v, event ->
@@ -157,8 +196,7 @@ class MainActivity : ComponentActivity() {
                         scrubbingBrightness = event.x < v.width / 2f
                         scrubbingVolume = !scrubbingBrightness
                         gestureStartY = event.y
-                        val attrs = window.attributes
-                        gestureStartBrightness = if (attrs.screenBrightness < 0f) 0.5f else attrs.screenBrightness
+                        gestureStartBrightness = 0.5f
                         val audio = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
                         gestureStartVolume = audio.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
                         true
@@ -173,9 +211,15 @@ class MainActivity : ComponentActivity() {
                                 (gestureStartVolume + delta * maxVol).toInt().coerceIn(0, maxVol), 0
                             )
                         } else if (scrubbingBrightness) {
-                            val attrs = window.attributes
-                            attrs.screenBrightness = (gestureStartBrightness + delta).coerceIn(0.05f, 1f)
-                            window.attributes = attrs
+                            val level = (gestureStartBrightness + delta).coerceIn(0f, 1f)
+                            val amount = (kotlin.math.abs(level - 0.5f) * 1.5f).coerceIn(0f, 0.72f)
+                            val alpha = (amount * 255).toInt()
+                            val tint = if (level >= 0.5f) {
+                                android.graphics.Color.argb(alpha, 255, 255, 255)
+                            } else {
+                                android.graphics.Color.argb(alpha, 0, 0, 0)
+                            }
+                            brightnessOverlay.setBackgroundColor(tint)
                         }
                         true
                     }
@@ -195,63 +239,30 @@ class MainActivity : ComponentActivity() {
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 0.42f
         ))
 
-        // Speed and time-unit controls are moved into the row above the seekbar.
-        // Playback controls sit directly below the player, left-aligned in
-        // two compact vertical columns. The player view itself is unchanged.
-        val playerControls = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.TOP or Gravity.START
-            setPadding(dp(2), 0, dp(2), 0)
-        }
-        val controlsColumnOne = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.TOP
-        }
-        val controlsColumnTwo = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.TOP
-        }
-        val backButton = controlButton("−10 فریم") { seekFrames(-10) }
-        playButton = controlButton("▶") { togglePlay() }
-        val forwardButton = controlButton("+10 فریم") { seekFrames(10) }
-        timeModeButton = controlButton("SEC") {
-            timeModeSeconds = !timeModeSeconds
-            timeModeButton.text = if (timeModeSeconds) "SEC" else "MIN"
-            updateTimeLabel(positionLabel)
-        }
-        speedButton = controlButton("1.0x") {
-            speedIndex = (speedIndex + 1) % speeds.size
-            val speed = speeds[speedIndex]
-            player.setPlaybackSpeed(speed)
-            speedButton.text = "${speed}x"
-        }
-        listOf(backButton, forwardButton, speedButton).forEach {
-            controlsColumnOne.addView(it, fixedButtonParams())
-        }
-        listOf(playButton, timeModeButton).forEach {
-            controlsColumnTwo.addView(it, fixedButtonParams())
-        }
-        playerControls.addView(controlsColumnOne)
-        playerControls.addView(controlsColumnTwo)
-        root.addView(playerControls, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(126)
-        ))
+        // Playback controls are already integrated into the top tool strip.
 
         val seekRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(4), 0, dp(4), 0)
         }
-        val positionSeek = SeekBar(this).apply {
+        positionSeek = SeekBar(this).apply {
             max = 1000
             progress = 0
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
-                    if (fromUser && player.duration > 0) player.seekTo(player.duration * p / 1000)
-                    updateTimeLabel(positionLabel)
+                    if (fromUser && player.duration > 0) {
+                        val previewMs = player.duration * p / 1000
+                        positionLabel.text = formatTime(previewMs)
+                    }
                 }
-                override fun onStartTrackingTouch(s: SeekBar?) {}
-                override fun onStopTrackingTouch(s: SeekBar?) {}
+                override fun onStartTrackingTouch(s: SeekBar?) {
+                    isUserScrubbing = true
+                }
+                override fun onStopTrackingTouch(s: SeekBar?) {
+                    if (player.duration > 0) player.seekTo(player.duration * progress / 1000)
+                    isUserScrubbing = false
+                }
             })
         }
         positionLabel = TextView(this).apply {
@@ -266,6 +277,29 @@ class MainActivity : ComponentActivity() {
             ViewGroup.LayoutParams.MATCH_PARENT, dp(44)
         ))
 
+        val workerStatusRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(3), 0, dp(3), 0)
+        }
+        repeat(4) { index ->
+            val label = TextView(this).apply {
+                text = "P${index + 1}: آماده"
+                textSize = 9f
+                gravity = Gravity.CENTER
+                setTextColor(0xFFBDBDBD.toInt())
+                setBackgroundColor(0xFF252525.toInt())
+                setPadding(dp(2), dp(3), dp(2), dp(3))
+            }
+            workerLabels.add(label)
+            workerStatusRow.addView(label, LinearLayout.LayoutParams(0, dp(25), 1f).apply {
+                marginStart = dp(2); marginEnd = dp(2)
+            })
+        }
+        root.addView(workerStatusRow, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(28)
+        ))
+
         val storyboardToolbar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -275,11 +309,34 @@ class MainActivity : ComponentActivity() {
         val middleButton = controlButton("وسط") { scrollStoryboardTo(frameCount / 2) }
         val downButton = controlButton("پایین") { scrollStoryboardTo(frameCount - 1) }
         columnSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@MainActivity,
-                android.R.layout.simple_spinner_dropdown_item,
+            val spinnerAdapter = object : ArrayAdapter<String>(
+                this@MainActivity, android.R.layout.simple_spinner_item,
                 (1..15).map { "$it ستون" }
-            )
+            ) {
+                override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                    val view = super.getView(position, convertView, parent) as TextView
+                    view.setTextColor(android.graphics.Color.WHITE)
+                    view.textSize = 11f
+                    view.gravity = Gravity.CENTER
+                    view.setPadding(dp(2), 0, dp(2), 0)
+                    return view
+                }
+                override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View {
+                    val view = super.getDropDownView(position, convertView, parent) as TextView
+                    view.setTextColor(android.graphics.Color.WHITE)
+                    view.setBackgroundColor(0xFF292929.toInt())
+                    view.textSize = 12f
+                    view.setPadding(dp(10), dp(8), dp(10), dp(8))
+                    return view
+                }
+            }
+            spinnerAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            adapter = spinnerAdapter
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xFF292929.toInt())
+                setStroke(dp(1), 0xFF777777.toInt())
+                cornerRadius = dp(4).toFloat()
+            }
             setSelection(columns - 1)
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
@@ -297,7 +354,44 @@ class MainActivity : ComponentActivity() {
         listOf(upButton, middleButton, downButton).forEach {
             storyboardToolbar.addView(it, fixedButtonParams())
         }
-        storyboardToolbar.addView(columnSpinner, LinearLayout.LayoutParams(0, dp(85), 1f))
+        storyboardToolbar.addView(columnSpinner, LinearLayout.LayoutParams(dp(88), dp(39)))
+        val minuteInput = EditText(this).apply {
+            hint = "Min"
+            setText("0")
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setTextColor(android.graphics.Color.WHITE)
+            setHintTextColor(0xFFAAAAAA.toInt())
+            textSize = 11f
+            gravity = Gravity.CENTER
+            setSingleLine(true)
+            setPadding(0, 0, 0, 0)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xFF292929.toInt()); setStroke(dp(1), 0xFF777777.toInt()); cornerRadius = dp(4).toFloat()
+            }
+        }
+        val secondInput = EditText(this).apply {
+            hint = "Sec"
+            setText("0")
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setTextColor(android.graphics.Color.WHITE)
+            setHintTextColor(0xFFAAAAAA.toInt())
+            textSize = 11f
+            gravity = Gravity.CENTER
+            setSingleLine(true)
+            setPadding(0, 0, 0, 0)
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xFF292929.toInt()); setStroke(dp(1), 0xFF777777.toInt()); cornerRadius = dp(4).toFloat()
+            }
+        }
+        storyboardToolbar.addView(minuteInput, LinearLayout.LayoutParams(dp(42), dp(38)).apply { marginStart = dp(3) })
+        storyboardToolbar.addView(secondInput, LinearLayout.LayoutParams(dp(42), dp(38)).apply { marginStart = dp(2) })
+        storyboardToolbar.addView(controlButton("Time\nSet") {
+            val minutes = minuteInput.text.toString().toLongOrNull() ?: 0L
+            val seconds = secondInput.text.toString().toLongOrNull() ?: 0L
+            val target = (minutes * 60_000L + seconds * 1_000L).coerceAtLeast(0L)
+            if (player.duration > 0) player.seekTo(target.coerceAtMost(player.duration))
+            else Toast.makeText(this, "ابتدا ویدیو وارد کنید", Toast.LENGTH_SHORT).show()
+        }, LinearLayout.LayoutParams(dp(48), dp(39)).apply { marginStart = dp(3) })
         root.addView(storyboardToolbar, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, dp(43)
         ))
@@ -342,11 +436,43 @@ class MainActivity : ComponentActivity() {
         ))
 
         setContentView(root)
+        mainHandler.post(positionTicker)
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 playButton.text = if (isPlaying) "Ⅱ" else "▶"
             }
         })
+    }
+
+    private val positionTicker = object : Runnable {
+        override fun run() {
+            if (!isFinishing && !isDestroyed) {
+                if (!isUserScrubbing && player.duration > 0) {
+                    positionSeek.progress = ((player.currentPosition * 1000L) / player.duration)
+                        .toInt().coerceIn(0, 1000)
+                    updateTimeLabel(positionLabel)
+                }
+                mainHandler.postDelayed(this, 100L)
+            }
+        }
+    }
+
+    private fun formatTime(ms: Long): String {
+        val totalSeconds = (ms.coerceAtLeast(0L) / 1000L)
+        return if (timeModeSeconds) "${totalSeconds}s"
+        else String.format("%02d:%02d", totalSeconds / 60, totalSeconds % 60)
+    }
+
+    private fun setWorkerStatus(index: Int, message: String, done: Boolean = false) {
+        if (index !in workerLabels.indices) return
+        runOnUiThread {
+            if (index in workerLabels.indices) {
+                workerLabels[index].text = "P${index + 1}: $message"
+                workerLabels[index].setTextColor(
+                    if (done) 0xFF80D8A0.toInt() else 0xFFFFD180.toInt()
+                )
+            }
+        }
     }
 
     private fun fixedButtonParams() = LinearLayout.LayoutParams(dp(54), dp(42))
@@ -598,6 +724,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun extractFrames(uri: Uri) {
+        val generation = ++extractionGeneration
+        framesCompleted = 0
+        workerLabels.forEachIndexed { index, _ -> setWorkerStatus(index, "در صف") }
         val metadata = MediaMetadataRetriever()
         try {
             metadata.setDataSource(this, uri)
@@ -616,12 +745,15 @@ class MainActivity : ComponentActivity() {
             adapter.notifyDataSetChanged()
 
             val next = AtomicInteger(0)
-            repeat(4) {
+            repeat(4) { workerIndex ->
                 frameExecutor.execute {
+                    if (generation != extractionGeneration) return@execute
+                    setWorkerStatus(workerIndex, "در حال کار")
+                    var localDone = 0
                     val workerRetriever = MediaMetadataRetriever()
                     try {
                         workerRetriever.setDataSource(this, uri)
-                        while (true) {
+                        while (generation == extractionGeneration) {
                             val index = next.getAndIncrement()
                             if (index >= frameCount) break
                             try {
@@ -630,9 +762,18 @@ class MainActivity : ComponentActivity() {
                                     MediaMetadataRetriever.OPTION_CLOSEST_SYNC
                                 )
                                 if (bitmap != null) {
-                                    synchronized(frames) { frames[index] = bitmap }
-                                    runOnUiThread {
-                                        if (!isFinishing && !isDestroyed) adapter.notifyItemChanged(index)
+                                    synchronized(frames) {
+                                        if (generation == extractionGeneration) frames[index] = bitmap
+                                        else bitmap.recycle()
+                                    }
+                                    if (generation == extractionGeneration) {
+                                        localDone++
+                                        synchronized(this) { framesCompleted++ }
+                                        runOnUiThread {
+                                            if (!isFinishing && !isDestroyed && generation == extractionGeneration) {
+                                                adapter.notifyItemChanged(index)
+                                            }
+                                        }
                                     }
                                 }
                             } catch (_: Exception) { }
@@ -640,6 +781,7 @@ class MainActivity : ComponentActivity() {
                     } catch (_: Exception) {
                     } finally {
                         workerRetriever.release()
+                        setWorkerStatus(workerIndex, "تمام: $localDone", done = true)
                     }
                 }
             }
@@ -650,13 +792,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateTimeLabel(label: TextView) {
-        val ms = player.currentPosition.coerceAtLeast(0)
-        val seconds = ms / 1000
-        label.text = if (timeModeSeconds) "${seconds}s" else
-            String.format("%02d:%02d", seconds / 60, seconds % 60)
+        label.text = formatTime(player.currentPosition)
     }
 
     override fun onDestroy() {
+        mainHandler.removeCallbacks(positionTicker)
+        extractionGeneration++
         super.onDestroy()
         player.release()
         frameExecutor.shutdownNow()
