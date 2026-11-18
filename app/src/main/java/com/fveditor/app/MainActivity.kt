@@ -49,6 +49,8 @@ class MainActivity : ComponentActivity() {
     private var isUserScrubbing = false
     private var extractionGeneration = 0
     private var framesCompleted = 0
+    private val selectedFrames = mutableSetOf<Int>()
+    private var customStoryboardIntervalMs: Long? = null
 
     private val frameCount = 150
     private val frames = MutableList<Bitmap?>(frameCount) { null }
@@ -118,22 +120,45 @@ class MainActivity : ComponentActivity() {
             setPadding(0, 0, 0, 0)
         }
 
-        // Compact top strip: keep only unique main actions. Player controls are
-        // integrated here; duplicate/unimplemented tool launchers are omitted.
+        // Restore the original full-width horizontal Tool row.
         val toolScroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = true
+            isFillViewport = false
             overScrollMode = View.OVER_SCROLL_NEVER
+            clipToPadding = false
         }
         val toolRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.TOP or Gravity.START
-            setPadding(dp(2), dp(1), dp(2), 0)
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), 0, dp(2), 0)
         }
-        toolRow.addView(controlButton("Import\nVideo") { pickVideo.launch(arrayOf("video/*")) }, fixedButtonParams())
+        toolRow.addView(controlButton("Tool") { }, fixedButtonParams())
+        toolRow.addView(controlButton("Import Video") { pickVideo.launch(arrayOf("video/*")) }, fixedButtonParams())
         toolRow.addView(controlButton("Videos") { showVideoList() }, fixedButtonParams())
-        toolRow.addView(controlButton("Export\nVideo") { showExportDialog() }, fixedButtonParams())
+        toolRow.addView(controlButton("Export Video") { showExportDialog() }, fixedButtonParams())
         toolRow.addView(controlButton("Split") { showSplitDialog() }, fixedButtonParams())
+        toolRow.addView(controlButton("Delete") { showNotReady("حذف") }, fixedButtonParams())
+        toolRow.addView(controlButton("Crop") { showNotReady("برش") }, fixedButtonParams())
+        toolRow.addView(controlButton("Merge") { showNotReady("ادغام") }, fixedButtonParams())
+        toolRow.addView(controlButton("Join") { showNotReady("اتصال") }, fixedButtonParams())
+        toolRow.addView(controlButton("Color and Light") { showNotReady("رنگ و نور") }, fixedButtonParams())
+        toolRow.addView(controlButton("Tracks") { showNotReady("ترک‌ها") }, fixedButtonParams())
+        toolRow.addView(controlButton("Format") { showNotReady("فرمت") }, fixedButtonParams())
+        toolScroll.addView(toolRow)
+        // Keep the complete original 12-button Tool strip at the top.
+        // It scrolls horizontally when the device width cannot fit all 12.
+        root.addView(toolScroll, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(42)
+        ))
 
+        // Keep the player's control buttons in their original two-column
+        // arrangement directly below the player, without taking space from
+        // or removing buttons in the horizontal Tool row.
+        val playerControls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.TOP or Gravity.START
+            setPadding(dp(2), 0, dp(2), 0)
+        }
         val controlsColumnOne = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.TOP
@@ -162,12 +187,12 @@ class MainActivity : ComponentActivity() {
         listOf(playButton, timeModeButton).forEach {
             controlsColumnTwo.addView(it, fixedButtonParams())
         }
-        toolRow.addView(controlsColumnOne)
-        toolRow.addView(controlsColumnTwo)
-        toolScroll.addView(toolRow)
-        root.addView(toolScroll, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(86)
+        playerControls.addView(controlsColumnOne)
+        playerControls.addView(controlsColumnTwo)
+        root.addView(playerControls, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(120)
         ))
+
 
         // Keep the player itself unchanged; the transparent gesture layer sits
         // over it and interprets vertical drags on the left/right halves.
@@ -239,7 +264,6 @@ class MainActivity : ComponentActivity() {
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 0.42f
         ))
 
-        // Playback controls are already integrated into the top tool strip.
 
         val seekRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -354,7 +378,7 @@ class MainActivity : ComponentActivity() {
         listOf(upButton, middleButton, downButton).forEach {
             storyboardToolbar.addView(it, fixedButtonParams())
         }
-        storyboardToolbar.addView(columnSpinner, LinearLayout.LayoutParams(dp(88), dp(39)))
+        storyboardToolbar.addView(columnSpinner, LinearLayout.LayoutParams(dp(88), dp(40)))
         val minuteInput = EditText(this).apply {
             hint = "Min"
             setText("0")
@@ -387,17 +411,48 @@ class MainActivity : ComponentActivity() {
                 cornerRadius = dp(4).toFloat()
             }
         }
-        storyboardToolbar.addView(minuteInput, LinearLayout.LayoutParams(dp(42), dp(38)).apply { marginStart = dp(3) })
-        storyboardToolbar.addView(secondInput, LinearLayout.LayoutParams(dp(42), dp(38)).apply { marginStart = dp(2) })
+        storyboardToolbar.addView(minuteInput, LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginStart = dp(3) })
+        storyboardToolbar.addView(secondInput, LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginStart = dp(2) })
         storyboardToolbar.addView(controlButton("Time\nSet") {
             val minutes = minuteInput.text.toString().toLongOrNull() ?: 0L
             val seconds = secondInput.text.toString().toLongOrNull() ?: 0L
-            val target = (minutes * 60_000L + seconds * 1_000L).coerceAtLeast(0L)
-            if (player.duration > 0) player.seekTo(target.coerceAtMost(player.duration))
-            else Toast.makeText(this, "ابتدا ویدیو وارد کنید", Toast.LENGTH_SHORT).show()
-        }, LinearLayout.LayoutParams(dp(48), dp(39)).apply { marginStart = dp(3) })
+            val intervalMs = minutes * 60_000L + seconds * 1_000L
+            if (intervalMs <= 0L) {
+                Toast.makeText(this, "فاصله باید بیشتر از صفر باشد", Toast.LENGTH_SHORT).show()
+            } else if (selectedUri == null) {
+                Toast.makeText(this, "ابتدا ویدیو وارد کنید", Toast.LENGTH_SHORT).show()
+            } else {
+                customStoryboardIntervalMs = intervalMs
+                selectedFrames.clear()
+                adapter.notifyDataSetChanged()
+                extractFrames(selectedUri!!, intervalMs)
+                Toast.makeText(this, "فاصله اسلایدها: ${minutes}دقیقه و ${seconds}ثانیه", Toast.LENGTH_SHORT).show()
+            }
+        }, LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginStart = dp(3) })
         root.addView(storyboardToolbar, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dp(43)
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(42)
+        ))
+
+        val storyboardSelectionRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(2), 0, dp(2), 0)
+        }
+        storyboardSelectionRow.addView(controlButton("All View") {
+            columnSpinner.setSelection(14)
+            storyboard.post { storyboard.scrollToPosition(0) }
+        }, LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(3) })
+        storyboardSelectionRow.addView(controlButton("لغو انتخاب") {
+            selectedFrames.clear()
+            adapter.notifyDataSetChanged()
+        }, LinearLayout.LayoutParams(dp(40), dp(40)).apply { marginEnd = dp(3) })
+        storyboardSelectionRow.addView(controlButton("انتخاب همه") {
+            selectedFrames.clear()
+            frames.indices.filter { frames[it] != null }.forEach { selectedFrames.add(it) }
+            adapter.notifyDataSetChanged()
+        }, LinearLayout.LayoutParams(dp(40), dp(40)))
+        root.addView(storyboardSelectionRow, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dp(42)
         ))
 
         val storyboardArea = FrameLayout(this)
@@ -412,9 +467,16 @@ class MainActivity : ComponentActivity() {
         adapter = FrameAdapter(
             frames,
             columnCount = { columns },
-            availableWidth = { storyboard.width }
+            availableWidth = { storyboard.width },
+            selectedFrames = selectedFrames,
+            onSelectionChanged = { adapter.notifyDataSetChanged() }
         ) { index ->
-            if (player.duration > 0) player.seekTo(frameTimesMs[index].coerceAtMost(player.duration))
+            if (selectedFrames.isNotEmpty()) {
+                if (!selectedFrames.add(index)) selectedFrames.remove(index)
+                adapter.notifyItemChanged(index)
+            } else if (player.duration > 0) {
+                player.seekTo(frameTimesMs[index].coerceAtMost(player.duration))
+            }
         }
         storyboard.adapter = adapter
         storyboardArea.addView(storyboard, FrameLayout.LayoutParams(
@@ -479,7 +541,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun fixedButtonParams() = LinearLayout.LayoutParams(dp(54), dp(42))
+    private fun fixedButtonParams() = LinearLayout.LayoutParams(dp(40), dp(40))
 
     private fun scrollStoryboardTo(position: Int) {
         storyboard.scrollToPosition(position.coerceIn(0, frameCount - 1))
@@ -692,17 +754,33 @@ class MainActivity : ComponentActivity() {
 
     private fun controlButton(label: String, action: () -> Unit): Button =
         Button(this).apply {
-            text = if (label.contains(' ')) label.replace(" ", "\n") else label
+            // Every main-screen control uses a true 40dp square surface.
+            // Split every word/part onto its own line and shrink text to fit.
+            text = label.trim().replace(Regex("\\s+"), "\n")
             textSize = 8.5f
             gravity = Gravity.CENTER
             setSingleLine(false)
-            maxLines = 3
+            maxLines = 5
+            includeFontPadding = false
+            setAutoSizeTextTypeUniformWithConfiguration(
+                5, 9, 1, android.util.TypedValue.COMPLEX_UNIT_SP
+            )
             isAllCaps = false
             minWidth = 0
             minimumWidth = 0
             minHeight = 0
             minimumHeight = 0
-            setPadding(dp(2), 0, dp(2), 0)
+            setPadding(0, 0, 0, 0)
+            // Remove the platform Button's default insets so the visible
+            // button itself, not only its outer layout cell, is 40dp square.
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0xFF30343B.toInt())
+                setStroke(dp(1), 0xFF777777.toInt())
+                cornerRadius = dp(3).toFloat()
+            }
+            setTextColor(android.graphics.Color.WHITE)
+            stateListAnimator = null
+            elevation = 0f
             setOnClickListener { action() }
         }
 
@@ -724,10 +802,10 @@ class MainActivity : ComponentActivity() {
         player.setMediaItem(MediaItem.fromUri(uri))
         player.prepare()
         player.playWhenReady = false
-        extractFrames(uri)
+        extractFrames(uri, customStoryboardIntervalMs)
     }
 
-    private fun extractFrames(uri: Uri) {
+    private fun extractFrames(uri: Uri, intervalOverrideMs: Long? = null) {
         val generation = ++extractionGeneration
         framesCompleted = 0
         workerLabels.forEachIndexed { index, _ -> setWorkerStatus(index, "در صف") }
@@ -743,7 +821,11 @@ class MainActivity : ComponentActivity() {
                 frames.forEachIndexed { index, bitmap ->
                     bitmap?.recycle()
                     frames[index] = null
-                    frameTimesMs[index] = (durationMs * index / frameCount).coerceAtMost(durationMs - 1)
+                    frameTimesMs[index] = if (intervalOverrideMs != null) {
+                        index.toLong() * intervalOverrideMs
+                    } else {
+                        (durationMs * index / frameCount).coerceAtMost(durationMs - 1)
+                    }
                 }
             }
             adapter.notifyDataSetChanged()
@@ -760,6 +842,7 @@ class MainActivity : ComponentActivity() {
                         while (generation == extractionGeneration) {
                             val index = next.getAndIncrement()
                             if (index >= frameCount) break
+                            if (frameTimesMs[index] >= durationMs) continue
                             try {
                                 val bitmap = workerRetriever.getFrameAtTime(
                                     frameTimesMs[index] * 1000L,
@@ -813,6 +896,8 @@ private class FrameAdapter(
     private val frames: List<Bitmap?>,
     private val columnCount: () -> Int,
     private val availableWidth: () -> Int,
+    private val selectedFrames: MutableSet<Int>,
+    private val onSelectionChanged: () -> Unit,
     private val onClick: (Int) -> Unit
 ) : RecyclerView.Adapter<FrameAdapter.Holder>() {
 
@@ -863,11 +948,24 @@ private class FrameAdapter(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
         )
         params.width = ViewGroup.LayoutParams.MATCH_PARENT
-        params.height = (cellWidth * 0.62f).toInt().coerceAtLeast(1)
+        // Keep storyboard rows tightly packed: no vertical margins or item padding.
+        params.height = (cellWidth * 0.50f).toInt().coerceAtLeast(1)
+        params.topMargin = 0
+        params.bottomMargin = 0
+        params.leftMargin = 0
+        params.rightMargin = 0
+        holder.root.setPadding(0, 0, 0, 0)
         holder.root.layoutParams = params
         holder.image.setImageBitmap(frames[position])
         holder.label.text = "%03d".format(position + 1)
+        val selected = selectedFrames.contains(position)
+        holder.root.setBackgroundColor(if (selected) 0xFFFFC107.toInt() else 0xFF242424.toInt())
         holder.root.setOnClickListener { onClick(position) }
+        holder.root.setOnLongClickListener {
+            if (!selectedFrames.add(position)) selectedFrames.remove(position)
+            onSelectionChanged()
+            true
+        }
     }
 
     override fun getItemCount() = frames.size
