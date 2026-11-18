@@ -363,8 +363,7 @@ class MainActivity : ComponentActivity() {
             setHintTextColor(0xFFAAAAAA.toInt())
             textSize = 11f
             gravity = Gravity.CENTER
-<<<<<<< HEAD
-            maxLines = 1
+            setSingleLine(true)
             setPadding(0, 0, 0, 0)
             background = android.graphics.drawable.GradientDrawable().apply {
                 setColor(0xFF292929.toInt())
@@ -380,60 +379,17 @@ class MainActivity : ComponentActivity() {
             setHintTextColor(0xFFAAAAAA.toInt())
             textSize = 11f
             gravity = Gravity.CENTER
-            maxLines = 1
+            setSingleLine(true)
             setPadding(0, 0, 0, 0)
             background = android.graphics.drawable.GradientDrawable().apply {
                 setColor(0xFF292929.toInt())
                 setStroke(dp(1), 0xFF777777.toInt())
                 cornerRadius = dp(4).toFloat()
-            }
-        }
-        storyboardToolbar.addView(minuteInput, LinearLayout.LayoutParams(dp(42), dp(38)).apply { marginStart = dp(3) })
-        storyboardToolbar.addView(secondInput, LinearLayout.LayoutParams(dp(42), dp(38)).apply { marginStart = dp(2) })
-        storyboardToolbar.addView(controlButton("Time\\nSet") {
-=======
-<<<<<<< HEAD
-            setSingleLine(true)
-            setPadding(0, 0, 0, 0)
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(0xFF292929.toInt()); setStroke(dp(1), 0xFF777777.toInt()); cornerRadius = dp(4).toFloat()
-            }
-        }
-        val secondInput = EditText(this).apply {
-            hint = "Sec"
-            setText("0")
-            inputType = android.text.InputType.TYPE_CLASS_NUMBER
-            setTextColor(android.graphics.Color.WHITE)
-            setHintTextColor(0xFFAAAAAA.toInt())
-            textSize = 11f
-            gravity = Gravity.CENTER
-            setSingleLine(true)
-=======
-            singleLine = true
-            setPadding(0, 0, 0, 0)
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(0xFF292929.toInt()); setStroke(dp(1), 0xFF777777.toInt()); cornerRadius = dp(4).toFloat()
-            }
-        }
-        val secondInput = EditText(this).apply {
-            hint = "Sec"
-            setText("0")
-            inputType = android.text.InputType.TYPE_CLASS_NUMBER
-            setTextColor(android.graphics.Color.WHITE)
-            setHintTextColor(0xFFAAAAAA.toInt())
-            textSize = 11f
-            gravity = Gravity.CENTER
-            singleLine = true
->>>>>>> branch 'master' of https://github.com/matlabyab-maker/FVEditor.git
-            setPadding(0, 0, 0, 0)
-            background = android.graphics.drawable.GradientDrawable().apply {
-                setColor(0xFF292929.toInt()); setStroke(dp(1), 0xFF777777.toInt()); cornerRadius = dp(4).toFloat()
             }
         }
         storyboardToolbar.addView(minuteInput, LinearLayout.LayoutParams(dp(42), dp(38)).apply { marginStart = dp(3) })
         storyboardToolbar.addView(secondInput, LinearLayout.LayoutParams(dp(42), dp(38)).apply { marginStart = dp(2) })
         storyboardToolbar.addView(controlButton("Time\nSet") {
->>>>>>> branch 'master' of https://github.com/matlabyab-maker/FVEditor.git
             val minutes = minuteInput.text.toString().toLongOrNull() ?: 0L
             val seconds = secondInput.text.toString().toLongOrNull() ?: 0L
             val target = (minutes * 60_000L + seconds * 1_000L).coerceAtLeast(0L)
